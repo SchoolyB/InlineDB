@@ -1,0 +1,239 @@
+import @io, @time, @fmt, @arrays
+
+//===========CONSTANTS===========//
+const EXTENSION string = ".inlinedb"
+const BIN_PATH string =  "./bin/"
+const DB_PATH string = "${BIN_PATH}/databases/"
+const MAX_DB_COUNT int = 5 // arbitray ass number, holds no meaning right now
+const MAX_TABLE_ROWS int = 1000
+const MAX_DB_NAME_LEN int = 32
+const MAX_TABLE_NAME_LEN int = 16
+const INVALID_CHARS string = ".,/!@#$%^&*()_+-=:;"
+
+//===========TYPE DECLARATIONS===========//
+const Engine struct {
+    dbs [Database]
+}
+
+const Database struct {
+    name, path string
+    metadata Metadata
+    tables [Table]
+}
+
+const Metadata struct {
+    init_time int = time.now()
+    last_modified int = time.now()
+    checksum, size int
+}
+
+
+const Table struct {
+    id int
+    name string
+    declarations [Declaration]
+}
+
+const Declaration struct {
+    id int
+    mutState Mutability
+    name string
+    datatype DataType
+    value string
+    selfAsString string
+}
+
+const Mutability enum {
+    MUT = 0
+    CONST = 1 //Read only cannot modify but can delete
+}
+
+const DataType enum {
+    CHAR = "char"
+    STR = "str"
+    INT = "int" //i64
+    UINT = "uint" //u64
+    BOOL = "bool"
+    FLOAT = "float" //f64
+    VOID = "void"
+}
+
+//===========FUNCTIONS===========//
+
+mut eng = Engine{}
+
+do main(){
+    init()
+    db = create_new_db("Foo")
+    db = create_table(db, "Bar")
+
+    decl = make_new_declaration(.MUT, "Baz", .STR, "Hello, World")
+
+    print(db)
+    println(decl)
+}
+
+do init(){
+    //Make bin dir and subdirs
+    mut _, _ = io.make_dir(BIN_PATH)
+    mut _, _ = io.make_dir(DB_PATH)
+}
+
+//==================DB FILE RELATED FUNCTIONS==================//
+#doc("Takes in a name n and assigns it to a Database, creates the DB file, returns the new DB")
+do create_new_db(n string) -> Database{
+    mut db = new(Database)^
+    db.name = n
+    db.path = "${DB_PATH}/${n}${EXTENSION}"
+
+    if verify_db_name(db) == true {
+        db.metadata = init_metadata()
+        create_new_db_file(db) //TODO: Handle my load ;)
+    } otherwise {
+        //TODO: Dont panic here add in error handling...
+        //panic("Unable to create db with name '${n}'")
+    }
+
+    return db
+}
+
+#doc("Verifies the name of the passed in Database db is valid")
+do verify_db_name(db Database) -> bool {
+
+    //Name length checks
+    if len(db.name) == 0 {return false}
+    if len(db.name) > MAX_DB_NAME_LEN {return false}
+
+    //Invalid char checks
+    for_each c in INVALID_CHARS {
+        if c in db.name {
+            return false
+        }
+    }
+
+    //Already existing name check
+    if io.file_exists(db.path) == true {
+        return false
+    }
+
+    return true
+}
+
+#discard
+#doc("Creates a new .inlinedb file of the name of the passed in Database db")
+do create_new_db_file(db Database) -> bool {
+    mut success, err = io.write_file(db.path, "")
+    append_metadata_globals(db)
+    return success
+}
+
+//==================METADATA(global constant) RELATED FUNCTIONS==================//
+#doc("Initializes the standardized metadata gloabl contants for new .inline files")
+do init_metadata() -> Metadata{
+    mut t = time.now()
+    mut m = new(Metadata)
+
+    m.init_time = t
+    m.last_modified = t
+    m.checksum = 0
+    return m^
+}
+
+#doc("Appends the standardized metadata header to a .inline Database file(db.path)")
+do append_metadata_globals(db Database){
+    mut arr [string]= {
+        fmt.sprintf("const CREATED int = %d\n", db.metadata.init_time),
+        fmt.sprintf("const LAST_MODIFIED int = %d\n", db.metadata.last_modified),
+        "const CHECKSUM int = 0 \n",
+        fmt.sprintf("const SIZE int = %d\n\n\n\n", db.metadata.size)
+
+    }
+
+    for_each a in arr {
+        mut success, err = io.append_file(db.path, a)
+    }
+}
+
+//==================TABLE(struct) RELATED FUNCTIONS==================//
+#doc("Creates a new Table with the name n and appends it to the passed in Database db")
+do create_table(&db Database, n string) -> Database {
+    mut t = new(Table)^
+    t.name = n
+
+    if verify_table_name(t) == false {
+        panic("Failed to create table of name '${n}'")
+    }
+
+    return add_table_to_db(db, t)
+}
+
+#doc("Verifies the provided name of Table is valid")
+do verify_table_name(t Table) -> bool {
+    if len(t.name) == 0 {return false}
+    if len(t.name) > MAX_TABLE_NAME_LEN {return false}
+
+    //Invalid char checks
+    for_each c in INVALID_CHARS {
+        if c in t.name {
+            return false
+        }
+    }
+    return true
+}
+
+#doc("Helper that adds the passed in Table t to the passed in Database db in memory")
+do add_table_to_db(&db Database, t Table) -> Database{
+    arrays.append(db.tables, t)
+    append_table_to_db_file(db, t) //TODO: handle my load ;)
+    return db
+}
+
+#discard
+#doc("Actually appends a Table t to a .inlinedb Database file @ (db.path)")
+do append_table_to_db_file(db Database, t Table) -> bool {
+    mut content = "const ${t.name} struct {\n\t\n}\n\n"
+    mut _, err = io.append_file(db.path, content)
+    if err != nil {return false}
+    return true
+}
+//==================ROW(declaration) RELATED FUNCTIONS==================//
+do make_new_declaration(m Mutability, n string, dT DataType, v string) -> Declaration {
+    mut D = new(Declaration)^
+
+    D.name = n
+    D.mutState = m
+    D.datatype = dT
+    D.value = v
+
+    return D
+}
+
+do create_declartion_string(&t Table, &d Declaration) -> Table {
+    mut mutabilty string
+
+    #strict
+    when d.mutState{
+        is .MUT {
+            mutabilty = "mut"
+        }
+        is .CONST{
+            mutabilty = "const"
+        }
+    }
+
+    mut decl string = "${mutabilty} ${d.name} ${d.datatype} ${d.value}"
+    d.selfAsString = decl
+    return append_declaration_to_array(t, d)
+}
+
+#discard
+do append_declaration_to_array(&t Table, d Declaration) -> Table {
+    arrays.append(t.declarations, d)
+    return t
+}
+
+do append_decl_to_table_in_file(db Database, d Declaration) -> bool {
+    mut _, err = io.append_file(db.path, d.selfAsString)
+    if err != nil {return false}
+    return true
+}
